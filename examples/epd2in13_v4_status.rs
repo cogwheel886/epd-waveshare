@@ -30,8 +30,9 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{Components, Disks, System};
 
-const STATE_FILE: &str = "/tmp/epd_status_initialized";
-const BASE_FILE: &str = "/tmp/epd_status_base_set";
+const STATE_DIR: &str = "/var/lib/epd-status";
+const STATE_FILE: &str = "/var/lib/epd-status/initialized";
+const BASE_FILE: &str = "/var/lib/epd-status/base_set";
 
 // ---- Data collection ----
 
@@ -370,6 +371,8 @@ fn render(display: &mut Display2in13, data: &StatusData) {
 // ---- Main ----
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(STATE_DIR)?;
+
     let data = StatusData::collect();
 
     // EPD setup

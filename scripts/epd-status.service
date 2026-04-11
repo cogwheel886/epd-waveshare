@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/usr/local/bin/epd2in13_v4_status
 User=root
+StateDirectory=epd-status
 StandardOutput=journal
 StandardError=journal
 

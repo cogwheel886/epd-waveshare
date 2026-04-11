@@ -13,6 +13,10 @@ fi
 
 echo "Installing epd-status display service..."
 
+echo "  Creating state directory /var/lib/epd-status"
+mkdir -p /var/lib/epd-status
+chmod 755 /var/lib/epd-status
+
 echo "  Copying binary to /usr/local/bin/epd2in13_v4_status"
 cp "$BINARY" /usr/local/bin/epd2in13_v4_status
 chmod 755 /usr/local/bin/epd2in13_v4_status
