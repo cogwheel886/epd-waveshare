@@ -92,6 +92,7 @@ pub mod epd2in9_v2;
 pub mod epd2in9b_v4;
 pub mod epd2in9bc;
 pub mod epd2in9d;
+pub mod epd3in52;
 pub mod epd3in7;
 pub mod epd4in2;
 pub mod epd5in65f;
