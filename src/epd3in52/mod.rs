@@ -43,8 +43,8 @@ pub type Display3in52 = crate::graphics::Display<
     Color,
 >;
 
-/// EPD3in52 driver
-pub struct EPD3in52<SPI, BUSY, DC, RST, DELAY> {
+/// Epd3in52 driver
+pub struct Epd3in52<SPI, BUSY, DC, RST, DELAY> {
     /// Connection Interface
     interface: DisplayInterface<SPI, BUSY, DC, RST, DELAY, SINGLE_BYTE_WRITE>,
     /// Background Color
@@ -54,7 +54,7 @@ pub struct EPD3in52<SPI, BUSY, DC, RST, DELAY> {
 }
 
 impl<SPI, BUSY, DC, RST, DELAY> InternalWiAdditions<SPI, BUSY, DC, RST, DELAY>
-    for EPD3in52<SPI, BUSY, DC, RST, DELAY>
+    for Epd3in52<SPI, BUSY, DC, RST, DELAY>
 where
     SPI: SpiDevice,
     BUSY: InputPin,
@@ -95,7 +95,7 @@ where
 }
 
 impl<SPI, BUSY, DC, RST, DELAY> WaveshareDisplay<SPI, BUSY, DC, RST, DELAY>
-    for EPD3in52<SPI, BUSY, DC, RST, DELAY>
+    for Epd3in52<SPI, BUSY, DC, RST, DELAY>
 where
     SPI: SpiDevice,
     BUSY: InputPin,
@@ -113,7 +113,7 @@ where
         delay: &mut DELAY,
         delay_us: Option<u32>,
     ) -> Result<Self, SPI::Error> {
-        let mut epd = EPD3in52 {
+        let mut epd = Epd3in52 {
             interface: DisplayInterface::new(busy, dc, rst, delay_us),
             background_color: DEFAULT_BACKGROUND_COLOR,
             lut_flag: false,
@@ -196,8 +196,10 @@ where
 
         self.lut_flag = !self.lut_flag;
 
-        self.interface.cmd(spi, Command::Refresh)?;
+        self.interface
+            .cmd_with_data(spi, Command::Refresh, &[0xA5])?;
         self.interface.wait_until_idle(delay, IS_BUSY_LOW);
+        delay.delay_us(200_000);
         Ok(())
     }
 
@@ -215,7 +217,11 @@ where
     fn clear_frame(&mut self, spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
         let color = self.background_color.get_byte_value();
         self.interface.cmd(spi, Command::DataStartTransmission)?;
-        self.interface.data_x_times(spi, color, WIDTH * HEIGHT)?;
+        self.interface.data_x_times(
+            spi,
+            color,
+            buffer_len(WIDTH as usize, HEIGHT as usize) as u32,
+        )?;
         Ok(())
     }
 

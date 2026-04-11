@@ -4,6 +4,26 @@
 //!
 //! - [Waveshare product page](https://www.waveshare.com/wiki/2.13inch_e-Paper_HAT_(V4))
 //! - [Waveshare Python driver](https://github.com/waveshare/e-Paper/blob/master/RaspberryPi_JetsonNano/python/lib/waveshare_epd/epd2in13_V4.py)
+//!
+//! # Power pin and constructors
+//!
+//! The V4 HAT has a power control pin (GPIO18) that must be driven HIGH before
+//! the display will respond. Two constructors are available:
+//!
+//! - [`Epd2in13::new_with_pwr`] — accepts a power pin, drives it HIGH during
+//!   init. Use this when your board has the PWR pin wired (the common case for
+//!   the Waveshare HAT).
+//! - [`WaveshareDisplay::new`] — no power pin, uses the [`NoPwrPin`] no-op
+//!   default. Use this on custom boards where power is always on.
+//!
+//! The [`WaveshareDisplay`] trait is implemented with a `PWR: OutputPin + Default`
+//! bound so that `new()` can construct the pin type from nothing. Real GPIO pin
+//! types typically do not implement `Default`, so `new_with_pwr()` users call
+//! the equivalent inherent methods (`update_frame`, `display_frame`, `sleep`,
+//! etc.) directly rather than going through the trait.
+//!
+//! To fully power down the display after sleep, call [`Epd2in13::power_off`]
+//! which drives the PWR pin LOW (matching the Python driver's `module_exit()`).
 
 /// Width of the display in pixels
 pub const WIDTH: u32 = 122;
@@ -248,8 +268,10 @@ where
         buffer: &[u8],
         delay: &mut DELAY,
     ) -> Result<(), SPI::Error> {
-        // Soft reset: RST LOW 1ms then HIGH
-        self.interface.reset(delay, 0, 1_000);
+        // Soft reset: RST LOW 1ms then HIGH — no trailing delay.
+        // Using soft_reset() instead of reset() which adds 200ms that
+        // would cause the controller to perform a full reset.
+        self.interface.soft_reset(delay, 1_000);
 
         self.interface
             .cmd_with_data(spi, Command::BorderWaveformControl, &[0x80])?;
@@ -276,6 +298,7 @@ where
         buffer: &[u8],
         _delay: &mut DELAY,
     ) -> Result<(), SPI::Error> {
+        assert!(buffer.len() == buffer_len(WIDTH as usize, HEIGHT as usize));
         self.use_full_frame(spi)?;
         self.interface
             .cmd_with_data(spi, Command::WriteRam, buffer)?;
@@ -298,8 +321,11 @@ where
         self.display_frame(spi, delay)
     }
 
-    /// Clear the display with the background color.
-    pub fn clear_frame(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
+    /// Clear the display RAM with the background color.
+    ///
+    /// This only writes to RAM. Call [`display_frame`] afterwards to
+    /// trigger a refresh, matching the behavior of other drivers.
+    pub fn clear_frame(&mut self, spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
         self.use_full_frame(spi)?;
 
         let color = self.background_color.get_byte_value();
@@ -311,18 +337,27 @@ where
             buffer_len(WIDTH as usize, HEIGHT as usize) as u32,
         )?;
 
-        self.turn_on_display(spi, delay)
+        Ok(())
     }
 
-    /// Enter deep sleep mode. Drives PWR_PIN LOW if present.
+    /// Enter deep sleep mode.
+    ///
+    /// The display retains its image and can be woken with [`wake_up`].
+    /// To fully power down, call [`power_off`] after this.
     pub fn sleep(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
         self.wait_until_idle(spi, delay)?;
         self.interface
             .cmd_with_data(spi, Command::DeepSleepMode, &[0x01])?;
-        delay.delay_us(2_000_000);
-        // Drive power pin LOW after deep sleep (V4 module_exit behavior)
-        let _ = self.pwr_pin.set_low();
         Ok(())
+    }
+
+    /// Drive the power pin LOW, fully powering down the display.
+    ///
+    /// Matches Python's `module_exit()`. Call after [`sleep`] when the
+    /// display is no longer needed. A subsequent [`wake_up`] will drive
+    /// PWR HIGH again during init.
+    pub fn power_off(&mut self) {
+        let _ = self.pwr_pin.set_low();
     }
 
     /// Reinitialize the display. Matches Python's `epd.init()`.
@@ -463,9 +498,6 @@ where
         self.wait_until_idle(spi, delay)?;
         self.interface
             .cmd_with_data(spi, Command::DeepSleepMode, &[0x01])?;
-        delay.delay_us(2_000_000);
-        // Drive power pin LOW after deep sleep (V4 module_exit behavior)
-        let _ = self.pwr_pin.set_low();
         Ok(())
     }
 
@@ -475,6 +507,7 @@ where
         buffer: &[u8],
         _delay: &mut DELAY,
     ) -> Result<(), SPI::Error> {
+        assert!(buffer.len() == buffer_len(WIDTH as usize, HEIGHT as usize));
         self.use_full_frame(spi)?;
         self.interface
             .cmd_with_data(spi, Command::WriteRam, buffer)?;
@@ -512,7 +545,7 @@ where
         self.display_frame(spi, delay)
     }
 
-    fn clear_frame(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
+    fn clear_frame(&mut self, spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
         self.use_full_frame(spi)?;
 
         let color = self.background_color.get_byte_value();
@@ -524,7 +557,7 @@ where
             buffer_len(WIDTH as usize, HEIGHT as usize) as u32,
         )?;
 
-        self.turn_on_display(spi, delay)
+        Ok(())
     }
 
     fn set_background_color(&mut self, background_color: Color) {

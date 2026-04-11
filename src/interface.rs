@@ -205,4 +205,15 @@ where
         // 10ms works fine with just for the 7in5_v2 but this needs to be validated for other devices
         delay.delay_us(200_000);
     }
+
+    /// Minimal reset pulse with no trailing delay.
+    ///
+    /// Used by partial refresh sequences where the 200ms post-reset delay
+    /// in [`reset`] would cause the controller to perform a full reset
+    /// instead of a soft reset.
+    pub(crate) fn soft_reset(&mut self, delay: &mut DELAY, duration: u32) {
+        let _ = self.rst.set_low();
+        delay.delay_us(duration);
+        let _ = self.rst.set_high();
+    }
 }

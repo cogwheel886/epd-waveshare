@@ -23,6 +23,7 @@ embedded-graphics = "0.8"
 embedded-hal-mock = { version = "0.11", default-features = false, features = [
     "eh1",
 ] }
+sysinfo = "0.33"
 
 [target.'cfg(unix)'.dev-dependencies]
 linux-embedded-hal = "0.4.0"
@@ -49,6 +50,10 @@ required-features = ["linux-dev"]
 
 [[example]]
 name = "epd2in13_v4_raw"
+required-features = ["linux-dev"]
+
+[[example]]
+name = "epd2in13_v4_status"
 required-features = ["linux-dev"]
 
 [[example]]
