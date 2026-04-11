@@ -68,8 +68,11 @@ where
 
         self.interface
             .cmd_with_data(spi, Command::PanelSetting, &[0xFF, 0x01])?;
-        self.interface
-            .cmd_with_data(spi, Command::PowerSetting, &[0x03, 0x10, 0x3F, 0x3F, 0x03])?;
+        self.interface.cmd_with_data(
+            spi,
+            Command::PowerSetting,
+            &[0x03, 0x10, 0x3F, 0x3F, 0x03],
+        )?;
         self.interface
             .cmd_with_data(spi, Command::BoosterSoftStart, &[0x37, 0x3D, 0x3D])?;
         self.interface
@@ -125,8 +128,7 @@ where
     }
 
     fn sleep(&mut self, spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
-        self.interface
-            .cmd_with_data(spi, Command::Sleep, &[0xA5])?;
+        self.interface.cmd_with_data(spi, Command::Sleep, &[0xA5])?;
         Ok(())
     }
 
@@ -212,10 +214,8 @@ where
 
     fn clear_frame(&mut self, spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
         let color = self.background_color.get_byte_value();
-        self.interface
-            .cmd(spi, Command::DataStartTransmission)?;
-        self.interface
-            .data_x_times(spi, color, WIDTH * HEIGHT)?;
+        self.interface.cmd(spi, Command::DataStartTransmission)?;
+        self.interface.data_x_times(spi, color, WIDTH * HEIGHT)?;
         Ok(())
     }
 
@@ -243,9 +243,6 @@ mod tests {
     fn epd_size() {
         assert_eq!(WIDTH, 240);
         assert_eq!(HEIGHT, 360);
-        assert_eq!(
-            buffer_len(WIDTH as usize, HEIGHT as usize),
-            240 / 8 * 360
-        );
+        assert_eq!(buffer_len(WIDTH as usize, HEIGHT as usize), 240 / 8 * 360);
     }
 }
