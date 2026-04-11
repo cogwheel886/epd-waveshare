@@ -15,7 +15,7 @@ pub(crate) enum Command {
     PowerSetting = 0x01,
     BoosterSoftStart = 0x06,
     DataStartTransmission = 0x13,
-    Refresh = 0x12,
+    Refresh = 0x17,
     LutVcom = 0x20,
     LutBlue = 0x21,
     LutWhite = 0x22,
@@ -48,7 +48,7 @@ mod tests {
         assert_eq!(Command::PowerSetting.address(), 0x01);
         assert_eq!(Command::BoosterSoftStart.address(), 0x06);
         assert_eq!(Command::DataStartTransmission.address(), 0x13);
-        assert_eq!(Command::Refresh.address(), 0x12);
+        assert_eq!(Command::Refresh.address(), 0x17);
         assert_eq!(Command::LutVcom.address(), 0x20);
         assert_eq!(Command::LutBlue.address(), 0x21);
         assert_eq!(Command::LutWhite.address(), 0x22);
