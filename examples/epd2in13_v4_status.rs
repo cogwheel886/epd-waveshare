@@ -2,8 +2,12 @@
 //! Reads real system data via sysinfo + pisugar socket and renders to e-paper.
 //!
 //! Uses partial refresh on subsequent runs to minimize e-paper wear.
-//! State file `/tmp/epd_status_initialized` tracks whether a full refresh
-//! has been performed since boot.
+//! Two state files in `/tmp` (cleared on reboot) control the sequence:
+//!
+//! 1. First run  — full refresh, creates `epd_status_initialized`
+//! 2. Second run — `display_part_base_image` (establishes base in both RAM
+//!    banks with one full refresh), creates `epd_status_base_set`
+//! 3. Third+ runs — `display_partial` only (true partial waveform, no flashing)
 
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
@@ -27,6 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{Components, Disks, System};
 
 const STATE_FILE: &str = "/tmp/epd_status_initialized";
+const BASE_FILE: &str = "/tmp/epd_status_base_set";
 
 // ---- Data collection ----
 
@@ -404,16 +409,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let buf = display.buffer();
     let initialized = Path::new(STATE_FILE).exists();
+    let base_set = Path::new(BASE_FILE).exists();
 
     if !initialized {
-        // First run since boot — full refresh establishes clean base image
+        // First run since boot — full refresh
         epd.update_frame(&mut spi, buf, &mut delay)?;
         epd.display_frame(&mut spi, &mut delay)?;
         std::fs::write(STATE_FILE, "")?;
         println!("full | {}", data.summary());
-    } else {
-        // Subsequent runs — partial refresh minimizes wear
+    } else if !base_set {
+        // Second run — establish partial base (writes both RAM banks, one full refresh)
         epd.display_part_base_image(&mut spi, buf, &mut delay)?;
+        std::fs::write(BASE_FILE, "")?;
+        println!("base | {}", data.summary());
+    } else {
+        // All subsequent runs — true partial refresh only
         epd.display_partial(&mut spi, buf, &mut delay)?;
         println!("partial | {}", data.summary());
     }
