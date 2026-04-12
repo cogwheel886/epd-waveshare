@@ -489,16 +489,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         epd.update_frame(&mut spi, buf, &mut delay)?;
         epd.display_frame(&mut spi, &mut delay)?;
         std::fs::write(STATE_FILE, "")?;
-        println!("full | {}", data.summary());
+        println!("{}", data.summary());
     } else if !base_set {
         // Second run — establish partial base (writes both RAM banks, one full refresh)
         epd.display_part_base_image(&mut spi, buf, &mut delay)?;
         std::fs::write(BASE_FILE, "")?;
-        println!("base | {}", data.summary());
+        println!("{}", data.summary());
     } else {
         // All subsequent runs — true partial refresh only
         epd.display_partial(&mut spi, buf, &mut delay)?;
-        println!("partial | {}", data.summary());
+        println!("{}", data.summary());
     }
 
     Ok(())
