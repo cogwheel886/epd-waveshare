@@ -25,7 +25,7 @@ use embedded_graphics::{
 };
 use epd_waveshare::{
     color::Color,
-    epd3in52::{Display3in52, Epd3in52},
+    epd3in52::{Display3in52, Epd3in52, HEIGHT, WIDTH},
     graphics::DisplayRotation,
     prelude::*,
 };
@@ -36,6 +36,7 @@ use linux_embedded_hal::{
 };
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // -- Set true to send a raw half-white/half-black test pattern ----------------
@@ -92,12 +93,60 @@ impl StatusData {
     }
 }
 
+fn parse_config() -> DisplayRotation {
+    if !Path::new("/etc/epd-waveshare.conf").exists() {
+        eprintln!(
+            "epd-waveshare: no config file found at /etc/epd-waveshare.conf, using defaults."
+        );
+        eprintln!("Create it with:");
+        eprintln!("  sudo tee /etc/epd-waveshare.conf << 'EOF'");
+        eprintln!("# /etc/epd-waveshare.conf");
+        eprintln!("rotation=0");
+        eprintln!("EOF");
+    }
+    let content = std::fs::read_to_string("/etc/epd-waveshare.conf").unwrap_or_default();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "rotation" {
+                match value.trim() {
+                    "0" => return DisplayRotation::Rotate0,
+                    "90" => return DisplayRotation::Rotate90,
+                    "180" => return DisplayRotation::Rotate180,
+                    "270" => return DisplayRotation::Rotate270,
+                    _ => eprintln!(
+                        "epd-waveshare: invalid rotation value '{}', using 0",
+                        value.trim()
+                    ),
+                }
+            }
+        }
+    }
+    DisplayRotation::Rotate0
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("epd3in52_ruby_status -- Waveshare 3.52\" on ruby");
 
     // -- Compile-time and runtime invariant checks ----------------------------
     const EXPECTED_BUF_LEN: usize = 240 / 8 * 360;
     assert_eq!(EXPECTED_BUF_LEN, 10800);
+
+    // -- Read config ----------------------------------------------------------
+    let rotation = parse_config();
+    let (logical_w, _logical_h) = match rotation {
+        DisplayRotation::Rotate0 | DisplayRotation::Rotate180 => (WIDTH, HEIGHT),
+        DisplayRotation::Rotate90 | DisplayRotation::Rotate270 => (HEIGHT, WIDTH),
+    };
+    let rotation_degrees: u16 = match rotation {
+        DisplayRotation::Rotate0 => 0,
+        DisplayRotation::Rotate90 => 90,
+        DisplayRotation::Rotate180 => 180,
+        DisplayRotation::Rotate270 => 270,
+    };
 
     // -- Collect system stats (CPU read takes ~500ms) -------------------------
     let data = StatusData::collect();
@@ -148,10 +197,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         epd.update_frame(&mut spi, &buf, &mut delay)?;
     } else {
-        // -- 3. Build frame buffer (landscape: 360w x 240h) -------------------
+        // -- 3. Build frame buffer --------------------------------------------
         println!("Rendering...");
         let mut display = Display3in52::default();
-        display.set_rotation(DisplayRotation::Rotate90);
+        display.set_rotation(rotation);
 
         assert_eq!(
             display.buffer().len(),
@@ -165,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "buffer must be all-white (0xFF) after clear"
         );
 
-        draw_status(&mut display, &data)?;
+        draw_status(&mut display, &data, logical_w, _logical_h)?;
 
         println!("Sending frame...");
         epd.update_frame(&mut spi, display.buffer(), &mut delay)?;
@@ -195,8 +244,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|p| format!("{:.0}%", p))
         .unwrap_or_else(|| "--".to_string());
     println!(
-        "[{}] Display updated. Temp {}°C  CPU {}  RAM {}/{}MB  Disk {}  Batt {}  Up {}",
+        "[{}] Display updated. Rotation {}°  Temp {}°C  CPU {}  RAM {}/{}MB  Disk {}  Batt {}  Up {}",
         data.timestamp,
+        rotation_degrees,
         temp_str,
         cpu_str,
         data.used_mb,
@@ -209,10 +259,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// -- Frame content (landscape: 360 wide x 240 tall) ---------------------------
+// -- Frame content ------------------------------------------------------------
 fn draw_status(
     display: &mut Display3in52,
     data: &StatusData,
+    w: u32,
+    _h: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let body = MonoTextStyleBuilder::new()
         .font(&FONT_8X13)
@@ -224,8 +276,9 @@ fn draw_status(
         .text_color(Color::White)
         .background_color(Color::Black)
         .build();
+
     // ── Header bar (full width, 28px tall) ───────────────────────────────────
-    Rectangle::new(Point::new(0, 0), Size::new(360, 28))
+    Rectangle::new(Point::new(0, 0), Size::new(w, 28))
         .into_styled(PrimitiveStyle::with_fill(Color::Black))
         .draw(display)?;
     Text::with_baseline(
@@ -235,9 +288,9 @@ fn draw_status(
         Baseline::Top,
     )
     .draw(display)?;
-    // 20 chars × 8px = 160px, starting at x=192 → ends at x=352
     let ts_short = format!("{} UTC", &data.timestamp[..16]);
-    Text::with_baseline(&ts_short, Point::new(192, 8), header_title, Baseline::Top)
+    let ts_x = (w as i32) - (ts_short.len() as i32 * 8) - 6;
+    Text::with_baseline(&ts_short, Point::new(ts_x, 8), header_title, Baseline::Top)
         .draw(display)?;
 
     // ── Stats (18px line spacing, all FONT_8X13) ─────────────────────────────
@@ -314,7 +367,7 @@ fn draw_status(
     if let Some(pct) = data.batt_percent {
         let bar_x = x;
         let bar_y = 170;
-        let bar_w = 164u32;
+        let bar_w = w / 2;
         let bar_h = 10u32;
         // Outline
         Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_w, bar_h))

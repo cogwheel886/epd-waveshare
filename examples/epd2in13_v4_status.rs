@@ -1,5 +1,5 @@
 //! System status display for Pi Zero 2W on Waveshare 2.13" V4 (SSD1680).
-//! Reads real system data via sysinfo + pisugar socket and renders to e-paper.
+//! Reads real system data via /proc + pisugar socket and renders to e-paper.
 //!
 //! Uses partial refresh on subsequent runs to minimize e-paper wear.
 //! Two state files in `/tmp` (cleared on reboot) control the sequence:
@@ -8,6 +8,9 @@
 //! 2. Second run — `display_part_base_image` (establishes base in both RAM
 //!    banks with one full refresh), creates `epd_status_base_set`
 //! 3. Third+ runs — `display_partial` only (true partial waveform, no flashing)
+//!
+//! Rotation changes automatically trigger a full refresh cycle
+//! to clear ghosting from the previous orientation.
 
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
@@ -16,7 +19,8 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use epd_waveshare::{
-    epd2in13_v4::{Display2in13, Epd2in13},
+    epd2in13_v4::{Display2in13, Epd2in13, HEIGHT, WIDTH},
+    graphics::DisplayRotation,
     prelude::*,
 };
 use linux_embedded_hal::{
@@ -32,6 +36,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const STATE_DIR: &str = "/var/lib/epd-status";
 const STATE_FILE: &str = "/var/lib/epd-status/initialized";
 const BASE_FILE: &str = "/var/lib/epd-status/base_set";
+const ROTATION_FILE: &str = "/var/lib/epd-status/rotation";
 
 // ---- Data collection ----
 
@@ -212,10 +217,13 @@ impl StatusData {
         (bat_line, volt_line)
     }
 
-    fn summary(&self) -> String {
+    fn summary(&self, rotation_degrees: u16, reoriented: bool) -> String {
+        let reoriented_str = if reoriented { " | REORIENTED" } else { "" };
         format!(
-            "{} | {} | {} | {} | {} | {} | {} | {} | {}",
+            "{} | ROT:{}{} | {} | {} | {} | {} | {} | {} | {} | {}",
             self.refresh_mode,
+            rotation_degrees,
+            reoriented_str,
             self.hostname,
             self.ip,
             self.datetime,
@@ -321,9 +329,44 @@ fn read_cpu_percent() -> Option<u32> {
     Some((100 * (dt - di) / dt) as u32)
 }
 
+fn parse_config() -> DisplayRotation {
+    if !Path::new("/etc/epd-waveshare.conf").exists() {
+        eprintln!(
+            "epd-waveshare: no config file found at /etc/epd-waveshare.conf, using defaults."
+        );
+        eprintln!("Create it with:");
+        eprintln!("  sudo tee /etc/epd-waveshare.conf << 'EOF'");
+        eprintln!("# /etc/epd-waveshare.conf");
+        eprintln!("rotation=0");
+        eprintln!("EOF");
+    }
+    let content = std::fs::read_to_string("/etc/epd-waveshare.conf").unwrap_or_default();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "rotation" {
+                match value.trim() {
+                    "0" => return DisplayRotation::Rotate0,
+                    "90" => return DisplayRotation::Rotate90,
+                    "180" => return DisplayRotation::Rotate180,
+                    "270" => return DisplayRotation::Rotate270,
+                    _ => eprintln!(
+                        "epd-waveshare: invalid rotation value '{}', using 0",
+                        value.trim()
+                    ),
+                }
+            }
+        }
+    }
+    DisplayRotation::Rotate0
+}
+
 // ---- Rendering ----
 
-fn render(display: &mut Display2in13, data: &StatusData) {
+fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
     let fill_black = PrimitiveStyle::with_fill(Color::Black);
 
     let white_on_black = MonoTextStyleBuilder::new()
@@ -342,7 +385,7 @@ fn render(display: &mut Display2in13, data: &StatusData) {
         .build();
 
     // Header bar: hostname left, IP right
-    Rectangle::new(Point::new(0, 0), Size::new(122, 13))
+    Rectangle::new(Point::new(0, 0), Size::new(w, 13))
         .into_styled(fill_black)
         .draw(display)
         .ok();
@@ -354,9 +397,14 @@ fn render(display: &mut Display2in13, data: &StatusData) {
     )
     .draw(display)
     .ok();
-    Text::with_text_style(&data.ip, Point::new(120, 2), white_on_black, right_align)
-        .draw(display)
-        .ok();
+    Text::with_text_style(
+        &data.ip,
+        Point::new((w - 2) as i32, 2),
+        white_on_black,
+        right_align,
+    )
+    .draw(display)
+    .ok();
 
     let mut y = 15;
 
@@ -443,6 +491,40 @@ fn render(display: &mut Display2in13, data: &StatusData) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(STATE_DIR)?;
 
+    let rotation = parse_config();
+    let (logical_w, logical_h) = match rotation {
+        DisplayRotation::Rotate0 | DisplayRotation::Rotate180 => (WIDTH, HEIGHT),
+        DisplayRotation::Rotate90 | DisplayRotation::Rotate270 => (HEIGHT, WIDTH),
+    };
+    let rotation_degrees: u16 = match rotation {
+        DisplayRotation::Rotate0 => 0,
+        DisplayRotation::Rotate90 => 90,
+        DisplayRotation::Rotate180 => 180,
+        DisplayRotation::Rotate270 => 270,
+    };
+
+    // Detect rotation changes and force full refresh if needed
+    let current_rotation = rotation_degrees.to_string();
+    let reoriented = if Path::new(ROTATION_FILE).exists() {
+        let last_rotation = std::fs::read_to_string(ROTATION_FILE)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if last_rotation != current_rotation {
+            eprintln!(
+                "epd-waveshare: rotation changed {} -> {}, forcing full refresh",
+                last_rotation, current_rotation
+            );
+            let _ = std::fs::remove_file(STATE_FILE);
+            let _ = std::fs::remove_file(BASE_FILE);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     let data = StatusData::collect();
 
     // EPD setup
@@ -477,8 +559,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Render to framebuffer
     let mut display = Display2in13::default();
+    display.set_rotation(rotation);
     display.clear(Color::White).ok();
-    render(&mut display, &data);
+    render(&mut display, &data, logical_w, logical_h);
 
     let buf = display.buffer();
     let initialized = Path::new(STATE_FILE).exists();
@@ -489,17 +572,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         epd.update_frame(&mut spi, buf, &mut delay)?;
         epd.display_frame(&mut spi, &mut delay)?;
         std::fs::write(STATE_FILE, "")?;
-        println!("{}", data.summary());
+        println!("{}", data.summary(rotation_degrees, reoriented));
     } else if !base_set {
         // Second run — establish partial base (writes both RAM banks, one full refresh)
         epd.display_part_base_image(&mut spi, buf, &mut delay)?;
         std::fs::write(BASE_FILE, "")?;
-        println!("{}", data.summary());
+        println!("{}", data.summary(rotation_degrees, reoriented));
     } else {
         // All subsequent runs — true partial refresh only
         epd.display_partial(&mut spi, buf, &mut delay)?;
-        println!("{}", data.summary());
+        println!("{}", data.summary(rotation_degrees, reoriented));
     }
+
+    let _ = std::fs::write(ROTATION_FILE, &current_rotation);
 
     Ok(())
 }
