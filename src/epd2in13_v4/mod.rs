@@ -323,7 +323,7 @@ where
 
     /// Clear the display RAM with the background color.
     ///
-    /// This only writes to RAM. Call [`display_frame`] afterwards to
+    /// This only writes to RAM. Call `display_frame()` afterwards to
     /// trigger a refresh, matching the behavior of other drivers.
     pub fn clear_frame(&mut self, spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
         self.use_full_frame(spi)?;
@@ -342,8 +342,8 @@ where
 
     /// Enter deep sleep mode.
     ///
-    /// The display retains its image and can be woken with [`wake_up`].
-    /// To fully power down, call [`power_off`] after this.
+    /// The display retains its image and can be woken with `wake_up()`.
+    /// To fully power down, call `power_off()` after this.
     pub fn sleep(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
         self.wait_until_idle(spi, delay)?;
         self.interface
@@ -353,8 +353,8 @@ where
 
     /// Drive the power pin LOW, fully powering down the display.
     ///
-    /// Matches Python's `module_exit()`. Call after [`sleep`] when the
-    /// display is no longer needed. A subsequent [`wake_up`] will drive
+    /// Matches Python's `module_exit()`. Call after `sleep()` when the
+    /// display is no longer needed. A subsequent `wake_up()` will drive
     /// PWR HIGH again during init.
     pub fn power_off(&mut self) {
         let _ = self.pwr_pin.set_low();
