@@ -12,7 +12,7 @@
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     prelude::*,
-    primitives::{Line, PrimitiveStyle, Rectangle},
+    primitives::{PrimitiveStyle, Rectangle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use epd_waveshare::{
@@ -45,12 +45,21 @@ struct StatusData {
     disk: String,
     battery: String,
     voltage: String,
+    refresh_mode: String,
 }
 
 impl StatusData {
     fn collect() -> Self {
         let cpu = Self::read_cpu();
         let (battery, voltage) = Self::read_battery();
+
+        let refresh_mode = if !Path::new(STATE_FILE).exists() {
+            "full".into()
+        } else if !Path::new(BASE_FILE).exists() {
+            "base".into()
+        } else {
+            "partial".into()
+        };
 
         StatusData {
             hostname: Self::read_hostname(),
@@ -62,6 +71,7 @@ impl StatusData {
             disk: Self::read_disk(),
             battery,
             voltage,
+            refresh_mode,
         }
     }
 
@@ -204,7 +214,8 @@ impl StatusData {
 
     fn summary(&self) -> String {
         format!(
-            "{} | {} | {} | {} | {} | {} | {} | {}",
+            "{} | {} | {} | {} | {} | {} | {} | {} | {}",
+            self.refresh_mode,
             self.hostname,
             self.ip,
             self.datetime,
@@ -313,7 +324,6 @@ fn read_cpu_percent() -> Option<u32> {
 // ---- Rendering ----
 
 fn render(display: &mut Display2in13, data: &StatusData) {
-    let stroke = PrimitiveStyle::with_stroke(Color::Black, 1);
     let fill_black = PrimitiveStyle::with_fill(Color::Black);
 
     let white_on_black = MonoTextStyleBuilder::new()
@@ -348,14 +358,7 @@ fn render(display: &mut Display2in13, data: &StatusData) {
         .draw(display)
         .ok();
 
-    let mut y = 14;
-
-    // Divider
-    Line::new(Point::new(0, y), Point::new(121, y))
-        .into_styled(stroke)
-        .draw(display)
-        .ok();
-    y += 2;
+    let mut y = 15;
 
     // Date/time
     Text::with_baseline(
@@ -366,7 +369,7 @@ fn render(display: &mut Display2in13, data: &StatusData) {
     )
     .draw(display)
     .ok();
-    y += 14;
+    y += 12;
 
     // Uptime
     Text::with_baseline(
@@ -377,20 +380,13 @@ fn render(display: &mut Display2in13, data: &StatusData) {
     )
     .draw(display)
     .ok();
-    y += 14;
-
-    // Divider
-    Line::new(Point::new(0, y), Point::new(121, y))
-        .into_styled(stroke)
-        .draw(display)
-        .ok();
-    y += 2;
+    y += 12;
 
     // CPU
     Text::with_baseline(&data.cpu, Point::new(2, y), black_on_white, Baseline::Top)
         .draw(display)
         .ok();
-    y += 14;
+    y += 12;
 
     // RAM
     Text::with_baseline(
@@ -401,20 +397,13 @@ fn render(display: &mut Display2in13, data: &StatusData) {
     )
     .draw(display)
     .ok();
-    y += 14;
+    y += 12;
 
     // Disk
     Text::with_baseline(&data.disk, Point::new(2, y), black_on_white, Baseline::Top)
         .draw(display)
         .ok();
-    y += 14;
-
-    // Divider
-    Line::new(Point::new(0, y), Point::new(121, y))
-        .into_styled(stroke)
-        .draw(display)
-        .ok();
-    y += 2;
+    y += 12;
 
     // Battery
     Text::with_baseline(
@@ -425,11 +414,22 @@ fn render(display: &mut Display2in13, data: &StatusData) {
     )
     .draw(display)
     .ok();
-    y += 14;
+    y += 12;
 
     // Voltage
     Text::with_baseline(
         &data.voltage,
+        Point::new(2, y),
+        black_on_white,
+        Baseline::Top,
+    )
+    .draw(display)
+    .ok();
+    y += 12;
+
+    // Refresh mode
+    Text::with_baseline(
+        &format!("RFR: {}", data.refresh_mode),
         Point::new(2, y),
         black_on_white,
         Baseline::Top,
