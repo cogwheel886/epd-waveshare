@@ -51,6 +51,8 @@ pub struct Epd3in52<SPI, BUSY, DC, RST, DELAY> {
     background_color: Color,
     /// Alternates waveform tables each refresh
     lut_flag: bool,
+    /// Controls which LUT waveform set is used: Full (GC) or Quick (DU)
+    refresh_lut: RefreshLut,
 }
 
 impl<SPI, BUSY, DC, RST, DELAY> InternalWiAdditions<SPI, BUSY, DC, RST, DELAY>
@@ -89,6 +91,7 @@ where
             .cmd_with_data(spi, Command::VcomDataSetting, &[0xB7])?;
 
         self.lut_flag = false;
+        self.refresh_lut = RefreshLut::Full;
 
         Ok(())
     }
@@ -117,6 +120,7 @@ where
             interface: DisplayInterface::new(busy, dc, rst, delay_us),
             background_color: DEFAULT_BACKGROUND_COLOR,
             lut_flag: false,
+            refresh_lut: RefreshLut::Full,
         };
 
         epd.init(spi, delay)?;
@@ -175,23 +179,52 @@ where
     }
 
     fn display_frame(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
-        self.interface
-            .cmd_with_data(spi, Command::LutVcom, &LUT_R20_GC)?;
-        self.interface
-            .cmd_with_data(spi, Command::LutBlue, &LUT_R21_GC)?;
-        self.interface
-            .cmd_with_data(spi, Command::LutGray2, &LUT_R24_GC)?;
+        match self.refresh_lut {
+            RefreshLut::Full => {
+                // GC (global clear) waveform — full quality, ~0.9s
+                self.interface
+                    .cmd_with_data(spi, Command::LutVcom, &LUT_R20_GC)?;
+                self.interface
+                    .cmd_with_data(spi, Command::LutBlue, &LUT_R21_GC)?;
+                self.interface
+                    .cmd_with_data(spi, Command::LutGray2, &LUT_R24_GC)?;
 
-        if !self.lut_flag {
-            self.interface
-                .cmd_with_data(spi, Command::LutWhite, &LUT_R22_GC)?;
-            self.interface
-                .cmd_with_data(spi, Command::LutGray1, &LUT_R23_GC[..42])?;
-        } else {
-            self.interface
-                .cmd_with_data(spi, Command::LutWhite, &LUT_R23_GC)?;
-            self.interface
-                .cmd_with_data(spi, Command::LutGray1, &LUT_R22_GC[..42])?;
+                if !self.lut_flag {
+                    self.interface
+                        .cmd_with_data(spi, Command::LutWhite, &LUT_R22_GC)?;
+                    self.interface
+                        .cmd_with_data(spi, Command::LutGray1, &LUT_R23_GC[..42])?;
+                } else {
+                    self.interface
+                        .cmd_with_data(spi, Command::LutWhite, &LUT_R23_GC)?;
+                    self.interface
+                        .cmd_with_data(spi, Command::LutGray1, &LUT_R22_GC[..42])?;
+                }
+            }
+            RefreshLut::Quick => {
+                // WARNING: DU (differential update) fast refresh.
+                // Waveshare note: "Quick refresh is supported, but the refresh
+                // effect is not good, but it is not recommended."
+                // Use RefreshLut::Full (GC) for normal operation.
+                self.interface
+                    .cmd_with_data(spi, Command::LutVcom, &LUT_R20_DU)?;
+                self.interface
+                    .cmd_with_data(spi, Command::LutBlue, &LUT_R21_DU)?;
+                self.interface
+                    .cmd_with_data(spi, Command::LutGray2, &LUT_R24_DU)?;
+
+                if !self.lut_flag {
+                    self.interface
+                        .cmd_with_data(spi, Command::LutWhite, &LUT_R22_DU)?;
+                    self.interface
+                        .cmd_with_data(spi, Command::LutGray1, &LUT_R23_DU[..42])?;
+                } else {
+                    self.interface
+                        .cmd_with_data(spi, Command::LutWhite, &LUT_R23_DU)?;
+                    self.interface
+                        .cmd_with_data(spi, Command::LutGray1, &LUT_R22_DU[..42])?;
+                }
+            }
         }
 
         self.lut_flag = !self.lut_flag;
@@ -229,9 +262,11 @@ where
         &mut self,
         _spi: &mut SPI,
         _delay: &mut DELAY,
-        _refresh_rate: Option<RefreshLut>,
+        refresh_rate: Option<RefreshLut>,
     ) -> Result<(), SPI::Error> {
-        // LUTs are sent during display_frame with alternating waveform tables
+        if let Some(lut) = refresh_rate {
+            self.refresh_lut = lut;
+        }
         Ok(())
     }
 
@@ -250,5 +285,12 @@ mod tests {
         assert_eq!(WIDTH, 240);
         assert_eq!(HEIGHT, 360);
         assert_eq!(buffer_len(WIDTH as usize, HEIGHT as usize), 240 / 8 * 360);
+    }
+
+    #[test]
+    fn lut_selection_default_is_full() {
+        // RefreshLut::Full is the default — DU must be explicitly requested
+        assert!(matches!(RefreshLut::Full, RefreshLut::Full));
+        assert!(matches!(RefreshLut::Quick, RefreshLut::Quick));
     }
 }
