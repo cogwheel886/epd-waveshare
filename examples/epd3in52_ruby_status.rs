@@ -93,7 +93,12 @@ impl StatusData {
     }
 }
 
-fn parse_config() -> DisplayRotation {
+struct EpdConfig {
+    rotation: DisplayRotation,
+    color_invert: bool,
+}
+
+fn parse_config() -> EpdConfig {
     if !Path::new("/etc/epd-waveshare.conf").exists() {
         eprintln!(
             "epd-waveshare: no config file found at /etc/epd-waveshare.conf, using defaults."
@@ -102,8 +107,11 @@ fn parse_config() -> DisplayRotation {
         eprintln!("  sudo tee /etc/epd-waveshare.conf << 'EOF'");
         eprintln!("# /etc/epd-waveshare.conf");
         eprintln!("rotation=0");
+        eprintln!("color_invert=false");
         eprintln!("EOF");
     }
+    let mut rotation = DisplayRotation::Rotate0;
+    let mut color_invert = false;
     let content = std::fs::read_to_string("/etc/epd-waveshare.conf").unwrap_or_default();
     for line in content.lines() {
         let line = line.trim();
@@ -111,21 +119,28 @@ fn parse_config() -> DisplayRotation {
             continue;
         }
         if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == "rotation" {
-                match value.trim() {
-                    "0" => return DisplayRotation::Rotate0,
-                    "90" => return DisplayRotation::Rotate90,
-                    "180" => return DisplayRotation::Rotate180,
-                    "270" => return DisplayRotation::Rotate270,
+            match key.trim() {
+                "rotation" => match value.trim() {
+                    "0" => rotation = DisplayRotation::Rotate0,
+                    "90" => rotation = DisplayRotation::Rotate90,
+                    "180" => rotation = DisplayRotation::Rotate180,
+                    "270" => rotation = DisplayRotation::Rotate270,
                     _ => eprintln!(
                         "epd-waveshare: invalid rotation value '{}', using 0",
                         value.trim()
                     ),
+                },
+                "color_invert" => {
+                    color_invert = value.trim() == "true";
                 }
+                _ => {}
             }
         }
     }
-    DisplayRotation::Rotate0
+    EpdConfig {
+        rotation,
+        color_invert,
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -136,12 +151,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(EXPECTED_BUF_LEN, 10800);
 
     // -- Read config ----------------------------------------------------------
-    let rotation = parse_config();
-    let (logical_w, _logical_h) = match rotation {
+    let config = parse_config();
+    let (logical_w, _logical_h) = match config.rotation {
         DisplayRotation::Rotate0 | DisplayRotation::Rotate180 => (WIDTH, HEIGHT),
         DisplayRotation::Rotate90 | DisplayRotation::Rotate270 => (HEIGHT, WIDTH),
     };
-    let rotation_degrees: u16 = match rotation {
+    let rotation_degrees: u16 = match config.rotation {
         DisplayRotation::Rotate0 => 0,
         DisplayRotation::Rotate90 => 90,
         DisplayRotation::Rotate180 => 180,
@@ -200,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // -- 3. Build frame buffer --------------------------------------------
         println!("Rendering...");
         let mut display = Display3in52::default();
-        display.set_rotation(rotation);
+        display.set_rotation(config.rotation);
 
         assert_eq!(
             display.buffer().len(),
@@ -217,7 +232,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         draw_status(&mut display, &data, logical_w, _logical_h)?;
 
         println!("Sending frame...");
-        epd.update_frame(&mut spi, display.buffer(), &mut delay)?;
+        let final_buffer: Vec<u8> = if config.color_invert {
+            display.buffer().iter().map(|&b| !b).collect()
+        } else {
+            display.buffer().to_vec()
+        };
+        epd.update_frame(&mut spi, &final_buffer, &mut delay)?;
     }
 
     // -- 4. Single refresh (lut_flag=false, matching Python Flag=0) -----------
@@ -244,9 +264,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|p| format!("{:.0}%", p))
         .unwrap_or_else(|| "--".to_string());
     println!(
-        "[{}] Display updated. Rotation {}°  Temp {}°C  CPU {}  RAM {}/{}MB  Disk {}  Batt {}  Up {}",
+        "[{}] Display updated. Rotation {}° Inv:{} Temp {}°C  CPU {}  RAM {}/{}MB  Disk {}  Batt {}  Up {}",
         data.timestamp,
         rotation_degrees,
+        config.color_invert,
         temp_str,
         cpu_str,
         data.used_mb,

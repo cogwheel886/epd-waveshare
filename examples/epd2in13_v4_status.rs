@@ -217,12 +217,13 @@ impl StatusData {
         (bat_line, volt_line)
     }
 
-    fn summary(&self, rotation_degrees: u16, reoriented: bool) -> String {
+    fn summary(&self, rotation_degrees: u16, color_invert: bool, reoriented: bool) -> String {
         let reoriented_str = if reoriented { " | REORIENTED" } else { "" };
         format!(
-            "{} | ROT:{}{} | {} | {} | {} | {} | {} | {} | {} | {}",
+            "{} | ROT:{} | Inv:{}{} | {} | {} | {} | {} | {} | {} | {} | {}",
             self.refresh_mode,
             rotation_degrees,
+            color_invert,
             reoriented_str,
             self.hostname,
             self.ip,
@@ -329,7 +330,12 @@ fn read_cpu_percent() -> Option<u32> {
     Some((100 * (dt - di) / dt) as u32)
 }
 
-fn parse_config() -> DisplayRotation {
+struct EpdConfig {
+    rotation: DisplayRotation,
+    color_invert: bool,
+}
+
+fn parse_config() -> EpdConfig {
     if !Path::new("/etc/epd-waveshare.conf").exists() {
         eprintln!(
             "epd-waveshare: no config file found at /etc/epd-waveshare.conf, using defaults."
@@ -338,8 +344,11 @@ fn parse_config() -> DisplayRotation {
         eprintln!("  sudo tee /etc/epd-waveshare.conf << 'EOF'");
         eprintln!("# /etc/epd-waveshare.conf");
         eprintln!("rotation=0");
+        eprintln!("color_invert=false");
         eprintln!("EOF");
     }
+    let mut rotation = DisplayRotation::Rotate0;
+    let mut color_invert = false;
     let content = std::fs::read_to_string("/etc/epd-waveshare.conf").unwrap_or_default();
     for line in content.lines() {
         let line = line.trim();
@@ -347,21 +356,28 @@ fn parse_config() -> DisplayRotation {
             continue;
         }
         if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == "rotation" {
-                match value.trim() {
-                    "0" => return DisplayRotation::Rotate0,
-                    "90" => return DisplayRotation::Rotate90,
-                    "180" => return DisplayRotation::Rotate180,
-                    "270" => return DisplayRotation::Rotate270,
+            match key.trim() {
+                "rotation" => match value.trim() {
+                    "0" => rotation = DisplayRotation::Rotate0,
+                    "90" => rotation = DisplayRotation::Rotate90,
+                    "180" => rotation = DisplayRotation::Rotate180,
+                    "270" => rotation = DisplayRotation::Rotate270,
                     _ => eprintln!(
                         "epd-waveshare: invalid rotation value '{}', using 0",
                         value.trim()
                     ),
+                },
+                "color_invert" => {
+                    color_invert = value.trim() == "true";
                 }
+                _ => {}
             }
         }
     }
-    DisplayRotation::Rotate0
+    EpdConfig {
+        rotation,
+        color_invert,
+    }
 }
 
 // ---- Rendering ----
@@ -491,12 +507,12 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(STATE_DIR)?;
 
-    let rotation = parse_config();
-    let (logical_w, logical_h) = match rotation {
+    let config = parse_config();
+    let (logical_w, logical_h) = match config.rotation {
         DisplayRotation::Rotate0 | DisplayRotation::Rotate180 => (WIDTH, HEIGHT),
         DisplayRotation::Rotate90 | DisplayRotation::Rotate270 => (HEIGHT, WIDTH),
     };
-    let rotation_degrees: u16 = match rotation {
+    let rotation_degrees: u16 = match config.rotation {
         DisplayRotation::Rotate0 => 0,
         DisplayRotation::Rotate90 => 90,
         DisplayRotation::Rotate180 => 180,
@@ -559,11 +575,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Render to framebuffer
     let mut display = Display2in13::default();
-    display.set_rotation(rotation);
+    display.set_rotation(config.rotation);
     display.clear(Color::White).ok();
     render(&mut display, &data, logical_w, logical_h);
 
-    let buf = display.buffer();
+    let final_buffer: Vec<u8> = if config.color_invert {
+        display.buffer().iter().map(|&b| !b).collect()
+    } else {
+        display.buffer().to_vec()
+    };
+    let buf = final_buffer.as_slice();
     let initialized = Path::new(STATE_FILE).exists();
     let base_set = Path::new(BASE_FILE).exists();
 
@@ -572,16 +593,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         epd.update_frame(&mut spi, buf, &mut delay)?;
         epd.display_frame(&mut spi, &mut delay)?;
         std::fs::write(STATE_FILE, "")?;
-        println!("{}", data.summary(rotation_degrees, reoriented));
+        println!(
+            "{}",
+            data.summary(rotation_degrees, config.color_invert, reoriented)
+        );
     } else if !base_set {
         // Second run — establish partial base (writes both RAM banks, one full refresh)
         epd.display_part_base_image(&mut spi, buf, &mut delay)?;
         std::fs::write(BASE_FILE, "")?;
-        println!("{}", data.summary(rotation_degrees, reoriented));
+        println!(
+            "{}",
+            data.summary(rotation_degrees, config.color_invert, reoriented)
+        );
     } else {
         // All subsequent runs — true partial refresh only
         epd.display_partial(&mut spi, buf, &mut delay)?;
-        println!("{}", data.summary(rotation_degrees, reoriented));
+        println!(
+            "{}",
+            data.summary(rotation_degrees, config.color_invert, reoriented)
+        );
     }
 
     let _ = std::fs::write(ROTATION_FILE, &current_rotation);
