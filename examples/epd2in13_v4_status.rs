@@ -28,7 +28,6 @@ use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use sysinfo::{Components, Disks, System};
 
 const STATE_DIR: &str = "/var/lib/epd-status";
 const STATE_FILE: &str = "/var/lib/epd-status/initialized";
@@ -50,10 +49,7 @@ struct StatusData {
 
 impl StatusData {
     fn collect() -> Self {
-        let mut sys = System::new_all();
-        std::thread::sleep(Duration::from_millis(200));
-        sys.refresh_cpu_usage();
-
+        let cpu = Self::read_cpu();
         let (battery, voltage) = Self::read_battery();
 
         StatusData {
@@ -61,8 +57,8 @@ impl StatusData {
             ip: Self::read_ip(),
             datetime: Self::read_datetime(),
             uptime: Self::read_uptime(),
-            cpu: Self::read_cpu(&sys),
-            memory: Self::read_memory(&sys),
+            cpu,
+            memory: Self::read_memory(),
             disk: Self::read_disk(),
             battery,
             voltage,
@@ -70,8 +66,9 @@ impl StatusData {
     }
 
     fn read_hostname() -> String {
-        System::host_name()
-            .unwrap_or_else(|| "unknown".into())
+        std::fs::read_to_string("/etc/hostname")
+            .unwrap_or_else(|_| "unknown".into())
+            .trim()
             .to_uppercase()
     }
 
@@ -103,50 +100,84 @@ impl StatusData {
     }
 
     fn read_uptime() -> String {
-        let total = System::uptime();
-        let days = total / 86400;
-        let hours = (total % 86400) / 3600;
-        let mins = (total % 3600) / 60;
-        if days > 0 {
-            format!("Up: {}d {}h {}m", days, hours, mins)
-        } else {
-            format!("Up: {}h {}m", hours, mins)
-        }
+        std::fs::read_to_string("/proc/uptime")
+            .ok()
+            .and_then(|s| {
+                s.split_whitespace()
+                    .next()
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .map(|secs| {
+                let total = secs as u64;
+                let days = total / 86400;
+                let hours = (total % 86400) / 3600;
+                let mins = (total % 3600) / 60;
+                if days > 0 {
+                    format!("Up: {}d {}h {}m", days, hours, mins)
+                } else {
+                    format!("Up: {}h {}m", hours, mins)
+                }
+            })
+            .unwrap_or_else(|| "Up: ??".into())
     }
 
-    fn read_cpu(sys: &System) -> String {
-        let usage = sys.global_cpu_usage();
-        let temp = Components::new_with_refreshed_list()
-            .iter()
-            .find(|c| c.label().contains("cpu") || c.label().contains("thermal"))
-            .and_then(|c| c.temperature())
-            .map(|t| format!("{:.1}C", t))
-            .unwrap_or_else(|| {
-                std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
-                    .ok()
-                    .and_then(|s| s.trim().parse::<f64>().ok())
-                    .map(|t| format!("{:.1}C", t / 1000.0))
-                    .unwrap_or_else(|| "??C".into())
-            });
+    fn read_cpu() -> String {
+        // CPU usage via /proc/stat delta
+        let usage = read_cpu_percent().map(|p| p as f32).unwrap_or(0.0);
+        let temp = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .map(|t| format!("{:.1}C", t as f64 / 1000.0))
+            .unwrap_or_else(|| "??C".into());
         format!("CPU: {:.0}% {}", usage, temp)
     }
 
-    fn read_memory(sys: &System) -> String {
-        let used_mb = sys.used_memory() / (1024 * 1024);
-        let total_mb = sys.total_memory() / (1024 * 1024);
+    fn read_memory() -> String {
+        let content = match std::fs::read_to_string("/proc/meminfo") {
+            Ok(c) => c,
+            Err(_) => return "RAM: ??".into(),
+        };
+        let mut total_kb = 0u64;
+        let mut avail_kb = 0u64;
+        for line in content.lines() {
+            if line.starts_with("MemTotal:") {
+                total_kb = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+            } else if line.starts_with("MemAvailable:") {
+                avail_kb = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+            }
+        }
+        let used_mb = total_kb.saturating_sub(avail_kb) / 1024;
+        let total_mb = total_kb / 1024;
         format!("RAM: {}/{}MB", used_mb, total_mb)
     }
 
     fn read_disk() -> String {
-        let disks = Disks::new_with_refreshed_list();
-        for disk in disks.list() {
-            if disk.mount_point() == Path::new("/") {
-                let total = disk.total_space() as f64 / 1_073_741_824.0;
-                let used = (disk.total_space() - disk.available_space()) as f64 / 1_073_741_824.0;
-                return format!("DSK: {:.1}/{:.1}GB", used, total);
-            }
+        let output = match std::process::Command::new("df").args(["-k", "/"]).output() {
+            Ok(o) => o,
+            Err(_) => return "DSK: ??".into(),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let line = match stdout.lines().nth(1) {
+            Some(l) => l,
+            None => return "DSK: ??".into(),
+        };
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 {
+            return "DSK: ??".into();
         }
-        "DSK: ??".into()
+        let total_kb: f64 = fields[1].parse().unwrap_or(0.0);
+        let used_kb: f64 = fields[2].parse().unwrap_or(0.0);
+        let total_gb = total_kb / 1_048_576.0;
+        let used_gb = used_kb / 1_048_576.0;
+        format!("DSK: {:.1}/{:.1}GB", used_gb, total_gb)
     }
 
     fn read_battery() -> (String, String) {
@@ -189,7 +220,7 @@ impl StatusData {
 fn query_pisugar(cmd: &str) -> Option<String> {
     let mut stream = UnixStream::connect("/tmp/pisugar-server.sock").ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    write!(stream, "{}\n", cmd).ok()?;
+    writeln!(stream, "{}", cmd).ok()?;
     let mut reader = BufReader::new(stream);
     let mut response = String::new();
     reader.read_line(&mut response).ok()?;
@@ -238,6 +269,45 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 
 fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+/// Read CPU utilization by sampling /proc/stat twice with a 500ms gap.
+fn read_cpu_percent() -> Option<u32> {
+    let parse_cpu_line = |s: &str| -> Option<(u64, u64)> {
+        let fields: Vec<u64> = s
+            .split_whitespace()
+            .skip(1) // skip "cpu"
+            .take(7) // user nice system idle iowait irq softirq
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        if fields.len() < 7 {
+            return None;
+        }
+        let idle = fields[3] + fields[4]; // idle + iowait
+        let total: u64 = fields.iter().sum();
+        Some((total, idle))
+    };
+
+    let read_first_line = || -> Option<String> {
+        std::fs::read_to_string("/proc/stat")
+            .ok()
+            .and_then(|s| s.lines().next().map(String::from))
+    };
+
+    let line1 = read_first_line()?;
+    let (total1, idle1) = parse_cpu_line(&line1)?;
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let line2 = read_first_line()?;
+    let (total2, idle2) = parse_cpu_line(&line2)?;
+
+    let dt = total2.saturating_sub(total1);
+    let di = idle2.saturating_sub(idle1);
+    if dt == 0 {
+        return Some(0);
+    }
+    Some((100 * (dt - di) / dt) as u32)
 }
 
 // ---- Rendering ----
