@@ -88,6 +88,8 @@ impl StatusData {
     }
 
     fn read_ip() -> String {
+        // UDP connect() sends no packet; it just picks the outbound interface
+        // so local_addr() reports this host's routable IP toward 8.8.8.8.
         if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
             if sock.connect("8.8.8.8:53").is_ok() {
                 if let Ok(addr) = sock.local_addr() {
@@ -99,10 +101,13 @@ impl StatusData {
     }
 
     fn read_datetime() -> String {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) if d.as_secs() > 1_600_000_000 => d.as_secs(),
+            _ => {
+                eprintln!("epd-waveshare: system clock not synced (pre-2020), displaying CLK?");
+                return "CLK? unsynced".into();
+            }
+        };
         let days_since_epoch = secs / 86400;
         let time_of_day = secs % 86400;
         let hours = time_of_day / 3600;
@@ -248,7 +253,7 @@ fn query_pisugar(cmd: &str) -> Option<String> {
 }
 
 fn parse_pisugar_float(response: &str) -> Option<f64> {
-    response.split(':').nth(1)?.trim().parse().ok()
+    response.rsplit_once(':')?.1.trim().parse().ok()
 }
 
 fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
@@ -327,7 +332,7 @@ fn read_cpu_percent() -> Option<u32> {
     if dt == 0 {
         return Some(0);
     }
-    Some((100 * (dt - di) / dt) as u32)
+    Some((100 * dt.saturating_sub(di) / dt) as u32)
 }
 
 struct EpdConfig {
@@ -337,15 +342,7 @@ struct EpdConfig {
 
 fn parse_config() -> EpdConfig {
     if !Path::new("/etc/epd-waveshare.conf").exists() {
-        eprintln!(
-            "epd-waveshare: no config file found at /etc/epd-waveshare.conf, using defaults."
-        );
-        eprintln!("Create it with:");
-        eprintln!("  sudo tee /etc/epd-waveshare.conf << 'EOF'");
-        eprintln!("# /etc/epd-waveshare.conf");
-        eprintln!("rotation=0");
-        eprintln!("color_invert=false");
-        eprintln!("EOF");
+        eprintln!("epd-waveshare: no config at /etc/epd-waveshare.conf, using defaults");
     }
     let mut rotation = DisplayRotation::Rotate0;
     let mut color_invert = false;
@@ -382,7 +379,12 @@ fn parse_config() -> EpdConfig {
 
 // ---- Rendering ----
 
-fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
+fn render(
+    display: &mut Display2in13,
+    data: &StatusData,
+    w: u32,
+    _h: u32,
+) -> Result<(), core::convert::Infallible> {
     let fill_black = PrimitiveStyle::with_fill(Color::Black);
 
     let white_on_black = MonoTextStyleBuilder::new()
@@ -403,24 +405,21 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
     // Header bar: hostname left, IP right
     Rectangle::new(Point::new(0, 0), Size::new(w, 13))
         .into_styled(fill_black)
-        .draw(display)
-        .ok();
+        .draw(display)?;
     Text::with_baseline(
         &data.hostname,
         Point::new(2, 2),
         white_on_black,
         Baseline::Top,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
     Text::with_text_style(
         &data.ip,
         Point::new((w - 2) as i32, 2),
         white_on_black,
         right_align,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
 
     let mut y = 15;
 
@@ -431,8 +430,7 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
         black_on_white,
         Baseline::Top,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
     y += 12;
 
     // Uptime
@@ -442,14 +440,12 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
         black_on_white,
         Baseline::Top,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
     y += 12;
 
     // CPU
     Text::with_baseline(&data.cpu, Point::new(2, y), black_on_white, Baseline::Top)
-        .draw(display)
-        .ok();
+        .draw(display)?;
     y += 12;
 
     // RAM
@@ -459,14 +455,12 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
         black_on_white,
         Baseline::Top,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
     y += 12;
 
     // Disk
     Text::with_baseline(&data.disk, Point::new(2, y), black_on_white, Baseline::Top)
-        .draw(display)
-        .ok();
+        .draw(display)?;
     y += 12;
 
     // Battery
@@ -476,8 +470,7 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
         black_on_white,
         Baseline::Top,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
     y += 12;
 
     // Voltage
@@ -487,8 +480,7 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
         black_on_white,
         Baseline::Top,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
     y += 12;
 
     // Refresh mode
@@ -498,8 +490,9 @@ fn render(display: &mut Display2in13, data: &StatusData, w: u32, _h: u32) {
         black_on_white,
         Baseline::Top,
     )
-    .draw(display)
-    .ok();
+    .draw(display)?;
+
+    Ok(())
 }
 
 // ---- Main ----
@@ -531,8 +524,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "epd-waveshare: rotation changed {} -> {}, forcing full refresh",
                 last_rotation, current_rotation
             );
-            let _ = std::fs::remove_file(STATE_FILE);
-            let _ = std::fs::remove_file(BASE_FILE);
             true
         } else {
             false
@@ -544,40 +535,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = StatusData::collect();
 
     // EPD setup
-    let mut spi = SpidevDevice::open("/dev/spidev0.0")?;
+    let mut spi =
+        SpidevDevice::open("/dev/spidev0.0").map_err(|e| format!("open /dev/spidev0.0: {e}"))?;
     let options = SpidevOptions::new()
         .bits_per_word(8)
         .max_speed_hz(4_000_000)
         .mode(spidev::SpiModeFlags::SPI_MODE_0)
         .build();
-    spi.configure(&options)?;
+    spi.configure(&options)
+        .map_err(|e| format!("configure /dev/spidev0.0: {e}"))?;
 
-    let mut chip = Chip::new("/dev/gpiochip0")?;
+    let mut chip = Chip::new("/dev/gpiochip0").map_err(|e| format!("open /dev/gpiochip0: {e}"))?;
     let busy = CdevPin::new(
-        chip.get_line(24)?
-            .request(LineRequestFlags::INPUT, 0, "epd-busy")?,
+        chip.get_line(24)
+            .map_err(|e| format!("claim GPIO24 (BUSY): {e}"))?
+            .request(LineRequestFlags::INPUT, 0, "epd-busy")
+            .map_err(|e| format!("request GPIO24 (BUSY) as input: {e}"))?,
     )?;
     let dc = CdevPin::new(
-        chip.get_line(25)?
-            .request(LineRequestFlags::OUTPUT, 0, "epd-dc")?,
+        chip.get_line(25)
+            .map_err(|e| format!("claim GPIO25 (DC): {e}"))?
+            .request(LineRequestFlags::OUTPUT, 0, "epd-dc")
+            .map_err(|e| format!("request GPIO25 (DC) as output: {e}"))?,
     )?;
     let rst = CdevPin::new(
-        chip.get_line(17)?
-            .request(LineRequestFlags::OUTPUT, 1, "epd-rst")?,
+        chip.get_line(17)
+            .map_err(|e| format!("claim GPIO17 (RST): {e}"))?
+            .request(LineRequestFlags::OUTPUT, 1, "epd-rst")
+            .map_err(|e| format!("request GPIO17 (RST) as output: {e}"))?,
     )?;
     let pwr = CdevPin::new(
-        chip.get_line(18)?
-            .request(LineRequestFlags::OUTPUT, 0, "epd-pwr")?,
+        chip.get_line(18)
+            .map_err(|e| format!("claim GPIO18 (PWR): {e}"))?
+            .request(LineRequestFlags::OUTPUT, 0, "epd-pwr")
+            .map_err(|e| format!("request GPIO18 (PWR) as output: {e}"))?,
     )?;
 
     let mut delay = Delay;
-    let mut epd = Epd2in13::new_with_pwr(&mut spi, busy, dc, rst, &mut delay, None, pwr)?;
+    let mut epd = Epd2in13::new_with_pwr(&mut spi, busy, dc, rst, &mut delay, None, pwr)
+        .map_err(|e| format!("EPD init (SSD1680): {e}"))?;
 
     // Render to framebuffer
     let mut display = Display2in13::default();
     display.set_rotation(config.rotation);
     display.clear(Color::White).ok();
-    render(&mut display, &data, logical_w, logical_h);
+    render(&mut display, &data, logical_w, logical_h)?;
 
     let final_buffer: Vec<u8> = if config.color_invert {
         display.buffer().iter().map(|&b| !b).collect()
@@ -585,36 +587,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         display.buffer().to_vec()
     };
     let buf = final_buffer.as_slice();
-    let initialized = Path::new(STATE_FILE).exists();
-    let base_set = Path::new(BASE_FILE).exists();
+    let initialized = !reoriented && Path::new(STATE_FILE).exists();
+    let base_set = !reoriented && Path::new(BASE_FILE).exists();
 
     if !initialized {
-        // First run since boot — full refresh
+        // First run since boot (or rotation change) — full refresh
         epd.update_frame(&mut spi, buf, &mut delay)?;
         epd.display_frame(&mut spi, &mut delay)?;
+        let _ = std::fs::remove_file(BASE_FILE);
         std::fs::write(STATE_FILE, "")?;
-        println!(
-            "{}",
-            data.summary(rotation_degrees, config.color_invert, reoriented)
-        );
     } else if !base_set {
         // Second run — establish partial base (writes both RAM banks, one full refresh)
         epd.display_part_base_image(&mut spi, buf, &mut delay)?;
         std::fs::write(BASE_FILE, "")?;
-        println!(
-            "{}",
-            data.summary(rotation_degrees, config.color_invert, reoriented)
-        );
     } else {
         // All subsequent runs — true partial refresh only
         epd.display_partial(&mut spi, buf, &mut delay)?;
-        println!(
-            "{}",
-            data.summary(rotation_degrees, config.color_invert, reoriented)
-        );
     }
 
     let _ = std::fs::write(ROTATION_FILE, &current_rotation);
+
+    epd.sleep(&mut spi, &mut delay)?;
+
+    println!(
+        "{}",
+        data.summary(rotation_degrees, config.color_invert, reoriented)
+    );
 
     Ok(())
 }

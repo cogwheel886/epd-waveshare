@@ -56,6 +56,10 @@ name = "epd2in13_v4_status"
 required-features = ["linux-dev"]
 
 [[example]]
+name = "epd3in52_ruby_status"
+required-features = ["linux-dev"]
+
+[[example]]
 name = "epd4in2"
 required-features = ["linux-dev"]
 
@@ -67,6 +71,7 @@ graphics = ["embedded-graphics-core"]
 epd2in13_v2 = []
 epd2in13_v3 = []
 epd2in13_v4 = []
+epd3in52 = []
 linux-dev = []
 
 # Offers an alternative fast full lut for type_a displays, but the refreshed screen isnt as clean looking

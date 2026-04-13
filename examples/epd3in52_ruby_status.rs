@@ -39,9 +39,6 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// -- Set true to send a raw half-white/half-black test pattern ----------------
-const TEST_PATTERN: bool = false;
-
 // -- GPIO pin numbers (BCM, verified from epdconfig.py on ruby) ---------------
 const PIN_BUSY: u32 = 24;
 const PIN_RST: u32 = 17;
@@ -100,15 +97,7 @@ struct EpdConfig {
 
 fn parse_config() -> EpdConfig {
     if !Path::new("/etc/epd-waveshare.conf").exists() {
-        eprintln!(
-            "epd-waveshare: no config file found at /etc/epd-waveshare.conf, using defaults."
-        );
-        eprintln!("Create it with:");
-        eprintln!("  sudo tee /etc/epd-waveshare.conf << 'EOF'");
-        eprintln!("# /etc/epd-waveshare.conf");
-        eprintln!("rotation=0");
-        eprintln!("color_invert=false");
-        eprintln!("EOF");
+        eprintln!("epd-waveshare: no config at /etc/epd-waveshare.conf, using defaults");
     }
     let mut rotation = DisplayRotation::Rotate0;
     let mut color_invert = false;
@@ -146,9 +135,7 @@ fn parse_config() -> EpdConfig {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("epd3in52_ruby_status -- Waveshare 3.52\" on ruby");
 
-    // -- Compile-time and runtime invariant checks ----------------------------
     const EXPECTED_BUF_LEN: usize = 240 / 8 * 360;
-    assert_eq!(EXPECTED_BUF_LEN, 10800);
 
     // -- Read config ----------------------------------------------------------
     let config = parse_config();
@@ -167,44 +154,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = StatusData::collect();
 
     // -- SPI setup (SpidevDevice, not Spidev) ---------------------------------
-    let mut spi = SpidevDevice::open(SPI_DEVICE)?;
+    let mut spi =
+        SpidevDevice::open(SPI_DEVICE).map_err(|e| format!("open /dev/spidev0.0: {e}"))?;
     let options = SpidevOptions::new()
         .bits_per_word(8)
         .max_speed_hz(SPI_SPEED_HZ)
         .mode(spidev::SpiModeFlags::SPI_MODE_0)
         .build();
-    spi.configure(&options)?;
+    spi.configure(&options)
+        .map_err(|e| format!("configure /dev/spidev0.0: {e}"))?;
 
     // -- GPIO setup (gpio_cdev on Pi 5) ---------------------------------------
-    let mut chip = Chip::new("/dev/gpiochip0")?;
+    let mut chip = Chip::new("/dev/gpiochip0").map_err(|e| format!("open /dev/gpiochip0: {e}"))?;
 
-    let busy = CdevPin::new(chip.get_line(PIN_BUSY)?.request(
-        LineRequestFlags::INPUT,
-        0,
-        "epd3in52-busy",
-    )?)?;
-    let dc = CdevPin::new(chip.get_line(PIN_DC)?.request(
-        LineRequestFlags::OUTPUT,
-        0,
-        "epd3in52-dc",
-    )?)?;
-    let rst = CdevPin::new(chip.get_line(PIN_RST)?.request(
-        LineRequestFlags::OUTPUT,
-        1,
-        "epd3in52-rst",
-    )?)?;
+    let busy = CdevPin::new(
+        chip.get_line(PIN_BUSY)
+            .map_err(|e| format!("claim GPIO24 (BUSY): {e}"))?
+            .request(LineRequestFlags::INPUT, 0, "epd3in52-busy")
+            .map_err(|e| format!("request GPIO24 (BUSY) as input: {e}"))?,
+    )?;
+    let dc = CdevPin::new(
+        chip.get_line(PIN_DC)
+            .map_err(|e| format!("claim GPIO25 (DC): {e}"))?
+            .request(LineRequestFlags::OUTPUT, 0, "epd3in52-dc")
+            .map_err(|e| format!("request GPIO25 (DC) as output: {e}"))?,
+    )?;
+    let rst = CdevPin::new(
+        chip.get_line(PIN_RST)
+            .map_err(|e| format!("claim GPIO17 (RST): {e}"))?
+            .request(LineRequestFlags::OUTPUT, 1, "epd3in52-rst")
+            .map_err(|e| format!("request GPIO17 (RST) as output: {e}"))?,
+    )?;
 
     let mut delay = Delay;
 
     // -- 1. Init display → lut_flag=false -------------------------------------
     println!("Initialising display...");
-    let mut epd = Epd3in52::new(&mut spi, busy, dc, rst, &mut delay, None)?;
+    let mut epd = Epd3in52::new(&mut spi, busy, dc, rst, &mut delay, None)
+        .map_err(|e| format!("EPD init (UC8253): {e}"))?;
 
     // -- 2. Clear display RAM (no refresh!) -----------------------------------
     println!("Clearing display RAM...");
     epd.clear_frame(&mut spi, &mut delay)?;
 
-    if TEST_PATTERN {
+    let test_pattern = std::env::var("EPD_TEST_PATTERN").is_ok();
+    if test_pattern {
         println!("Sending test pattern (top white / bottom black)...");
         let mut buf = vec![0xFFu8; EXPECTED_BUF_LEN];
         for b in buf[5400..].iter_mut() {
@@ -309,7 +303,10 @@ fn draw_status(
         Baseline::Top,
     )
     .draw(display)?;
-    let ts_short = format!("{} UTC", &data.timestamp[..16]);
+    let ts_short = format!(
+        "{} UTC",
+        data.timestamp.get(..16).unwrap_or(&data.timestamp)
+    );
     let ts_x = (w as i32) - (ts_short.len() as i32 * 8) - 6;
     Text::with_baseline(&ts_short, Point::new(ts_x, 8), header_title, Baseline::Top)
         .draw(display)?;
@@ -420,9 +417,11 @@ fn read_hostname() -> String {
 
 fn read_local_ip() -> String {
     use std::net::UdpSocket;
+    // UDP connect() sends no packet; it just picks the outbound interface
+    // so local_addr() reports this host's routable IP toward 8.8.8.8.
     UdpSocket::bind("0.0.0.0:0")
         .and_then(|s| {
-            s.connect("8.8.8.8:80")?;
+            s.connect("8.8.8.8:53")?;
             s.local_addr()
         })
         .map(|a| a.ip().to_string())
@@ -430,10 +429,13 @@ fn read_local_ip() -> String {
 }
 
 fn format_timestamp() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) if d.as_secs() > 1_600_000_000 => d.as_secs(),
+        _ => {
+            eprintln!("epd-waveshare: system clock not synced (pre-2020), displaying CLK?");
+            return "CLK? unsynced".to_string();
+        }
+    };
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
@@ -577,7 +579,7 @@ fn read_cpu_percent() -> Option<u32> {
     if dt == 0 {
         return Some(0);
     }
-    Some((100 * (dt - di) / dt) as u32)
+    Some((100 * dt.saturating_sub(di) / dt) as u32)
 }
 
 /// Read root filesystem usage by spawning `df -k /` and parsing output.
@@ -624,5 +626,5 @@ fn query_pisugar(cmd: &str) -> Option<String> {
 }
 
 fn parse_pisugar_float(response: &str) -> Option<f64> {
-    response.split(':').nth(1)?.trim().parse().ok()
+    response.rsplit_once(':')?.1.trim().parse().ok()
 }
