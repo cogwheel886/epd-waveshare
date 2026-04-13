@@ -1,6 +1,6 @@
-//! epd3in52_ruby_status — Waveshare 3.52" e-paper status display
+//! epd3in52_status — Waveshare 3.52" e-paper status display
 //!
-//! Target: ruby (Pi 5 8GB, 192.168.10.29)
+//! Target: Raspberry Pi 5 (aarch64, Raspberry Pi OS)
 //! Display: Waveshare 3.52" HAT, UC8253 controller, 240x360px
 //! GPIO: gpio_cdev backend (Pi 5 uses /dev/gpiochip0, no BCM offset)
 //! BUSY polarity: active-low (IS_BUSY_LOW = true)
@@ -11,11 +11,11 @@
 //! refresh to use swapped R22/R23 LUTs which inverts colors.
 //!
 //! Build and deploy:
-//!   cargo build --example epd3in52_ruby_status \
+//!   cargo build --example epd3in52_status \
 //!       --target aarch64-unknown-linux-gnu --release
-//!   scp target/aarch64-unknown-linux-gnu/release/examples/epd3in52_ruby_status \
-//!       ruby:~/
-//!   ssh ruby "sudo ./epd3in52_ruby_status"
+//!   scp target/aarch64-unknown-linux-gnu/release/examples/epd3in52_status \
+//!       <target>:~/
+//!   ssh <target> "sudo ./epd3in52_status"
 
 use embedded_graphics::{
     mono_font::{ascii::FONT_8X13, MonoTextStyleBuilder},
@@ -39,7 +39,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// -- GPIO pin numbers (BCM, verified from epdconfig.py on ruby) ---------------
+// -- GPIO pin numbers (BCM, verified from epdconfig.py) ---------------
 const PIN_BUSY: u32 = 24;
 const PIN_RST: u32 = 17;
 const PIN_DC: u32 = 25;
@@ -133,7 +133,7 @@ fn parse_config() -> EpdConfig {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("epd3in52_ruby_status -- Waveshare 3.52\" on ruby");
+    println!("epd3in52_status -- Waveshare 3.52\"");
 
     const EXPECTED_BUF_LEN: usize = 240 / 8 * 360;
 
