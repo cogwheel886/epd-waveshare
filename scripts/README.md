@@ -29,7 +29,36 @@ Copy the repo (or at minimum `scripts/` and the built binary) to the Pi, then:
 sudo ./scripts/install_epd_status.sh
 ```
 
-This installs the binary to `/usr/local/bin/`, copies the systemd units, and enables the timer.
+This installs all five components:
+
+1. The `epd2in13_v4_status` binary to `/usr/local/bin/`
+2. `epd-status.service` and `epd-status.timer` to `/etc/systemd/system/` (the periodic refresh)
+3. `epd-status-boot.service` to `/etc/systemd/system/` (boot-time state reset, see below)
+4. `journald-volatile.conf` to `/etc/systemd/journald.conf.d/volatile.conf` (SD card wear protection, see below)
+
+The timer is enabled and started, the boot service is enabled, and `systemd-journald` is restarted to pick up the volatile config.
+
+## Boot state reset
+
+`epd-status-boot.service` is a `oneshot` unit that runs before `epd-status.timer` on every boot and removes the state files under `/var/lib/epd-status/` (`initialized`, `base_set`, `rotation`).
+
+Why: the e-paper's controller RAM is cleared on power cycle, but the state files on the SD card survive across reboots. Without the reset, the next run after a cold boot would skip the full refresh and try to resume partial-refresh updates against an uninitialized display, leaving garbage on screen. Clearing the state files forces the correct full → base → partial refresh cycle on the first run after every boot.
+
+The service is ordered `Before=epd-status.timer` and wanted by `sysinit.target`, so it always completes before the first scheduled refresh.
+
+## Journald volatile config
+
+`journald-volatile.conf` switches journald to RAM-only storage with a 10MB cap:
+
+```ini
+[Journal]
+Storage=volatile
+RuntimeMaxUse=10M
+```
+
+Why: on Pi Zero 2W nodes the root filesystem lives on an SD card, and persistent journald writes are a meaningful source of write amplification over long deployments. Volatile storage keeps logs in `/run/log/journal` (tmpfs) so day-to-day logging never touches the card. Logs are lost on reboot, which is acceptable for these unattended status-display nodes.
+
+**Not recommended for development machines** (build hosts, Pi 5, anywhere with an SSD or where you debug across reboots) — persistent logs are valuable there. This config is specifically a deployment-node tradeoff.
 
 ## Timing
 
@@ -73,8 +102,11 @@ sudo systemctl stop epd-status.timer
 sudo systemctl disable epd-status.timer
 
 # Uninstall everything
-sudo systemctl disable epd-status.timer
+sudo systemctl disable epd-status.timer epd-status-boot.service
 sudo rm /etc/systemd/system/epd-status.{service,timer}
+sudo rm /etc/systemd/system/epd-status-boot.service
+sudo rm /etc/systemd/journald.conf.d/volatile.conf
 sudo rm /usr/local/bin/epd2in13_v4_status
 sudo systemctl daemon-reload
+sudo systemctl restart systemd-journald
 ```

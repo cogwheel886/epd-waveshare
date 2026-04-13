@@ -24,9 +24,20 @@ chmod 755 /usr/local/bin/epd2in13_v4_status
 echo "  Copying unit files to /etc/systemd/system/"
 cp "$SCRIPT_DIR/epd-status.service" /etc/systemd/system/epd-status.service
 cp "$SCRIPT_DIR/epd-status.timer" /etc/systemd/system/epd-status.timer
+cp "$SCRIPT_DIR/epd-status-boot.service" /etc/systemd/system/epd-status-boot.service
+
+echo "  Installing journald volatile config to /etc/systemd/journald.conf.d/volatile.conf"
+mkdir -p /etc/systemd/journald.conf.d
+cp "$SCRIPT_DIR/journald-volatile.conf" /etc/systemd/journald.conf.d/volatile.conf
 
 echo "  Reloading systemd daemon"
 systemctl daemon-reload
+
+echo "  Restarting systemd-journald to apply volatile config"
+systemctl restart systemd-journald
+
+echo "  Enabling boot state reset service"
+systemctl enable epd-status-boot.service
 
 echo "  Enabling and starting timer"
 systemctl enable epd-status.timer
