@@ -24,6 +24,27 @@
 //!
 //! To fully power down the display after sleep, call [`Epd2in13::power_off`]
 //! which drives the PWR pin LOW (matching the Python driver's `module_exit()`).
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use epd_waveshare::epd2in13_v4::{Display2in13, Epd2in13};
+//! use epd_waveshare::prelude::*;
+//!
+//! // Setup SPI, GPIO, and delay via linux-embedded-hal (omitted)
+//!
+//! let mut epd = Epd2in13::new_with_pwr(
+//!     &mut spi, busy, dc, rst, &mut delay, None, pwr,
+//! )?;
+//!
+//! let mut display = Display2in13::default();
+//! display.clear(Color::White).ok();
+//! // ... draw with embedded-graphics ...
+//!
+//! epd.update_frame(&mut spi, display.buffer(), &mut delay)?;
+//! epd.display_frame(&mut spi, &mut delay)?;
+//! epd.sleep(&mut spi, &mut delay)?;
+//! ```
 
 /// Width of the display in pixels
 pub const WIDTH: u32 = 122;
@@ -168,6 +189,7 @@ where
     }
 
     fn turn_on_display(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
+        // 0xF7: full refresh master activation sequence (normal)
         self.interface
             .cmd_with_data(spi, Command::DisplayUpdateControl2, &[0xF7])?;
         self.interface.cmd(spi, Command::MasterActivation)?;
@@ -175,6 +197,7 @@ where
     }
 
     fn turn_on_display_fast(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
+        // 0xC7: full refresh master activation sequence (fast)
         self.interface
             .cmd_with_data(spi, Command::DisplayUpdateControl2, &[0xC7])?;
         self.interface.cmd(spi, Command::MasterActivation)?;
@@ -186,6 +209,7 @@ where
         spi: &mut SPI,
         delay: &mut DELAY,
     ) -> Result<(), SPI::Error> {
+        // 0xFF: partial refresh master activation sequence
         self.interface
             .cmd_with_data(spi, Command::DisplayUpdateControl2, &[0xFF])?;
         self.interface.cmd(spi, Command::MasterActivation)?;
@@ -201,6 +225,8 @@ where
     ///
     /// After calling this, use `display_fast()` or `update_and_display_fast_frame()`.
     pub fn init_fast(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
+        // SSD1680: 20 ms initial HIGH, 2 ms LOW pulse — matches Waveshare
+        // Python reference driver (epd2in13_V4.py reset sequence)
         self.interface.reset(delay, 20_000, 2_000);
 
         self.interface.cmd(spi, Command::SwReset)?;
@@ -421,7 +447,8 @@ where
         // Drive power pin HIGH before any SPI communication (V4 requirement)
         let _ = self.pwr_pin.set_high();
 
-        // HW reset: HIGH 20ms -> LOW 2ms -> HIGH 20ms
+        // SSD1680: 20 ms initial HIGH, 2 ms LOW pulse — matches Waveshare
+        // Python reference driver (epd2in13_V4.py reset sequence)
         self.interface.reset(delay, 20_000, 2_000);
         self.wait_until_idle(spi, delay)?;
 

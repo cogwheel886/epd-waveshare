@@ -5,6 +5,7 @@ use crate::traits;
 /// EPD 2.13" V4 commands
 #[allow(dead_code)]
 #[derive(Copy, Clone)]
+#[repr(u8)]
 pub(crate) enum Command {
     /// Software reset
     SwReset = 0x12,

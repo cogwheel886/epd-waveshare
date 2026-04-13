@@ -100,7 +100,11 @@ where
     ) -> Result<(), SPI::Error> {
         // high for data
         let _ = self.dc.set_high();
-        // Transfer data (u8) over spi
+        // KNOWN-LIMITATION: one spi.write() per byte — each issues a full
+        // ioctl with CS toggle on linux-embedded-hal. Acceptable for
+        // clear_frame() which is not on the hot path for status displays.
+        // A future optimisation would batch into a heap-allocated Vec or
+        // use a fixed-size stack buffer with chunked writes.
         for _ in 0..repetitions {
             self.write(spi, &[val])?;
         }

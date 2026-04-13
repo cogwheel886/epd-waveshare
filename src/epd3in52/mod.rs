@@ -1,7 +1,40 @@
-//! A simple Driver for the Waveshare 3.52" E-Ink Display via SPI
+//! A Driver for the Waveshare 3.52" E-Ink Display via SPI (UC8253 controller)
 //!
+//! # References
 //!
-//! Build with the help of documentation/code from [Waveshare](https://www.waveshare.com/wiki/3.52inch_e-Paper_HAT),
+//! - [Waveshare product page](https://www.waveshare.com/wiki/3.52inch_e-Paper_HAT)
+//! - [Waveshare Python reference driver](https://www.waveshare.com/wiki/3.52inch_e-Paper_HAT#Demo_code)
+//!
+//! # LUT flag alternation
+//!
+//! The UC8253 requires alternating between two internal LUT flag states
+//! across consecutive [`WaveshareDisplay::display_frame`] calls. The driver
+//! tracks this automatically via the `lut_flag` field and swaps R22/R23
+//! LUT register assignments on each refresh.
+//!
+//! **Callers must not call `display_frame()` twice in a single refresh
+//! cycle** — doing so advances `lut_flag` out of sync with the panel state
+//! and causes the next image to refresh with swapped waveforms (visible as
+//! inverted colours).
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use epd_waveshare::epd3in52::{Display3in52, Epd3in52};
+//! use epd_waveshare::prelude::*;
+//!
+//! // Setup SPI, GPIO, and delay via linux-embedded-hal (omitted)
+//!
+//! let mut epd = Epd3in52::new(&mut spi, busy, dc, rst, &mut delay, None)?;
+//!
+//! let mut display = Display3in52::default();
+//! display.clear(Color::White).ok();
+//! // ... draw with embedded-graphics ...
+//!
+//! epd.update_frame(&mut spi, display.buffer(), &mut delay)?;
+//! epd.display_frame(&mut spi, &mut delay)?;
+//! epd.sleep(&mut spi, &mut delay)?;
+//! ```
 
 use embedded_hal::{
     delay::DelayNs,
@@ -43,7 +76,12 @@ pub type Display3in52 = crate::graphics::Display<
     Color,
 >;
 
-/// Epd3in52 driver
+/// Epd3in52 driver (UC8253)
+///
+/// Generic over the SPI device, BUSY/DC/RST pins, and delay provider.
+/// Construct via [`WaveshareDisplay::new`]; partial-refresh users should
+/// switch LUT modes via [`WaveshareDisplay::set_lut`] with
+/// [`RefreshLut::Quick`] before calling [`Epd3in52::display_frame`].
 pub struct Epd3in52<SPI, BUSY, DC, RST, DELAY> {
     /// Connection Interface
     interface: DisplayInterface<SPI, BUSY, DC, RST, DELAY, SINGLE_BYTE_WRITE>,
@@ -66,27 +104,38 @@ where
 {
     fn init(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
         // reset the device
-        self.interface.reset(delay, 30, 10);
+        // UC8253: 200 ms initial HIGH, 10 ms LOW pulse — matches Waveshare
+        // Python reference driver (epdconfig.delay_ms values)
+        self.interface.reset(delay, 200_000, 10_000);
 
+        // Panel setting (PSR): LUT from register, BWR mode, scan direction
         self.interface
             .cmd_with_data(spi, Command::PanelSetting, &[0xFF, 0x01])?;
+        // Power setting (PWR): VDS_EN/VDG_EN, VCOM/source voltages
         self.interface.cmd_with_data(
             spi,
             Command::PowerSetting,
             &[0x03, 0x10, 0x3F, 0x3F, 0x03],
         )?;
+        // Booster soft start (BTST): phase A/B/C drive strengths
         self.interface
             .cmd_with_data(spi, Command::BoosterSoftStart, &[0x37, 0x3D, 0x3D])?;
+        // TCON setting: source/gate non-overlap period
         self.interface
             .cmd_with_data(spi, Command::TconSetting, &[0x22])?;
+        // VCOM DC setting: VCOM voltage level
         self.interface
             .cmd_with_data(spi, Command::VcomDcSetting, &[0x07])?;
+        // PLL control: frame rate (50 Hz nominal)
         self.interface
             .cmd_with_data(spi, Command::PllControl, &[0x09])?;
+        // Power saving / gate EQ
         self.interface
             .cmd_with_data(spi, Command::PowerSaving, &[0x88])?;
+        // Resolution setting (TRES): 240 × 360 (0xF0 = 240, 0x0168 = 360)
         self.interface
             .cmd_with_data(spi, Command::ResolutionSetting, &[0xF0, 0x01, 0x68])?;
+        // VCOM data interval setting: border waveform + data polarity
         self.interface
             .cmd_with_data(spi, Command::VcomDataSetting, &[0xB7])?;
 
@@ -164,18 +213,25 @@ where
         Ok(())
     }
 
-    #[allow(unused)]
+    /// The UC8253 controller does not support partial frame updates
+    /// in the same way as SSD1680-based panels. This implementation
+    /// performs a full-frame update for API compatibility with the
+    /// [`WaveshareDisplay`] trait. The x, y, width, and height
+    /// parameters are accepted but ignored.
+    ///
+    /// For true partial refresh on this display, use
+    /// [`Epd3in52::display_frame`] with [`RefreshLut::Quick`] (DU mode).
     fn update_partial_frame(
         &mut self,
         spi: &mut SPI,
         delay: &mut DELAY,
         buffer: &[u8],
-        x: u32,
-        y: u32,
-        width: u32,
-        height: u32,
+        _x: u32,
+        _y: u32,
+        _width: u32,
+        _height: u32,
     ) -> Result<(), SPI::Error> {
-        todo!()
+        self.update_frame(spi, buffer, delay)
     }
 
     fn display_frame(&mut self, spi: &mut SPI, delay: &mut DELAY) -> Result<(), SPI::Error> {
