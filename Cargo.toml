@@ -56,7 +56,7 @@ name = "epd2in13_v4_status"
 required-features = ["linux-dev"]
 
 [[example]]
-name = "epd3in52_ruby_status"
+name = "epd3in52_status"
 required-features = ["linux-dev"]
 
 [[example]]
