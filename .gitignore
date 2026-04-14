@@ -17,3 +17,4 @@ Cargo.lock
 
 # Internal process documentation — never upstream
 docs/
+.claude/
